@@ -33,11 +33,16 @@ driver = webdriver.Chrome(service=Service(chromedriver_path), options=options)
 all_pages_content = ""
 failed_pages = []
 previous_page_content = None  # Used for duplication detection
+thread_title = ""
 
 def fetch_page(page_num):
     url = f"{base_url}p{page_num}"
     driver.get(url)
     time.sleep(1)  # Undviker bot-detection
+
+    global thread_title
+    if page_num == start_page and not thread_title:
+        thread_title = driver.title.strip()
 
     if "captcha" in driver.page_source.lower() or "säkerhetskontroll" in driver.page_source.lower():
         print(f"\033[91mCAPTCHA eller säkerhetssida på sida {page_num}. Hoppar över...\033[0m")
@@ -94,11 +99,13 @@ while True:
         message_text = message_div.get_text(separator="\n", strip=True)
 
         page_content += (
+            f"\n{'-'*60}\n\n"
             f"Datum: {date_element}\n"
             f"Användare: {username}\n"
             f"Inlägg:\n{message_text}\n"
-            f"{'-'*60}\n\n"
         )
+        
+    page_content += f"\n{'-'*60}\n\n"
 
     if previous_page_content is not None and page_content == previous_page_content:
         print(f"\033[93mSida {page_num - 1} är sista sidan av tråden.\033[0m")
@@ -108,7 +115,7 @@ while True:
 
     print(f"Hämtar sida {page_num}")
 
-    all_pages_content += "\n" + "-"*20 + f"\nPAGE {page_num}\n" + "-"*20 + "\n\n"
+    all_pages_content += "\n" + "-"*14 + f"\n|  SIDA {page_num}   |\n" + "-"*14 + "\n\n"
     all_pages_content += page_content
 
     if page_num % 10 == 0:
@@ -122,8 +129,10 @@ while True:
 
 driver.quit()
 
-# Save main text
+# Spara main text
 with open(output_file, "w", encoding="utf-8") as f:
+    f.write(f"Titel: \n{thread_title}\n\n")
+    f.write(f"URL: \n{base_url}\n\n")
     f.write(all_pages_content)
 
 # Save failed pages if any
