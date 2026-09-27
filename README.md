@@ -1,6 +1,6 @@
 # FlashbackRipper
 
-Python script för att spara en hel Flashback-tråd till en textfil. Alla inlägg struktureras med datum, användarnamn och sidnummer.
+Python script för att spara en hel Flashback-tråd till en textfil. Alla inlägg struktureras med datum, användarnamn och sidnummer. En separat .txt fil görs där alla länkar som programmet hittat i tråden sparas.
 
 
 ## Prerequisites
@@ -24,7 +24,8 @@ py ripper.py
 ```
 
 Hämtar alla sidor från en Flashback-tråd och sparar inlägg, användarnamn och datum till `content.txt`.  
-Om någon sida misslyckas sparas den i `failed_pages.txt` och skriver ut det i terminalen.
+Om någon sida misslyckas sparas den i `failed_pages.txt` och skriver ut det i terminalen. Alla länkar som hittas
+sparas i `links.txt`.
 
 Programmet hanterar CAPTCHA- och säkerhetssidor genom att hoppa över dem. Scriptet pausar också ibland för att undvika bot-detection.
 
@@ -42,6 +43,7 @@ För att använda:
 - **chromedriver**: Filnamnet på Chromedriver.
 - **output_file**: Filnamn för där innehållet från Flashback sparas.
 - **failed_pages_file**: Filnamn för där misslyckade sidonummer sparas.
+- **links_file**: Filnamn för där länkarna som hittas i tråden sparas.
 
 
 ### Notes

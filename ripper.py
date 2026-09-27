@@ -1,12 +1,13 @@
 import os
 import configparser
+import re
 from selenium import webdriver
-from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from bs4 import BeautifulSoup
 import time
+
 
 # Get path to settings.cfg
 script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -14,137 +15,604 @@ config = configparser.ConfigParser()
 config_path = os.path.join(script_dir, 'settings.cfg')
 config.read(config_path)
 
+
 # Access variables
-chromedriver_path = os.path.join(script_dir, config.get('Paths', 'chromedriver'))
-output_file = os.path.join(script_dir, config.get('Paths', 'output_file'))
-failed_pages_file = os.path.join(script_dir, config.get('Paths', 'failed_pages_file'))
+chromedriver_path = os.path.join(
+    script_dir,
+    config.get('Paths', 'chromedriver')
+)
+
+output_file = os.path.join(
+    script_dir,
+    config.get('Paths', 'output_file')
+)
+
+failed_pages_file = os.path.join(
+    script_dir,
+    config.get('Paths', 'failed_pages_file')
+)
+
+links_file = os.path.join(
+    script_dir,
+    config.get('Paths', 'links_file')
+)
 
 base_url = config.get('URL', 'base_url')
 start_page = config.getint('URL', 'start_page')
 end_page = config.getint('URL', 'end_page')
 
+if not base_url.strip():
+    print(
+        "\n\033[91mSaknas Flashback URL.\033[0m "
+        "Fyll i en URL i settings.cfg 'base_url' och "
+        "starta programmet igen för att söka igenom en tråd.\n"
+    )
+    exit()
+
+
 # Selenium setup
 options = webdriver.ChromeOptions()
 options.add_argument("--headless")
-options.add_argument("--log-level=3")  # Tar bort onödiga chromium-error printouts
-options.add_experimental_option('excludeSwitches', ['enable-logging'])
-driver = webdriver.Chrome(service=Service(chromedriver_path), options=options)
+options.add_argument("--log-level=3")
+options.add_experimental_option(
+    'excludeSwitches',
+    ['enable-logging']
+)
+
+driver = webdriver.Chrome(options=options)
+
 
 all_pages_content = ""
+
+# Dictionary containing all unique links.
+#
+# The URL itself is the key.
+# Each URL contains lists of all pages, posts and users
+# where that URL was found.
+found_links = {}
+
 failed_pages = []
-previous_page_content = None  # Used for duplication detection
+previous_page_content = None
 thread_title = ""
 
+
+def save_progress():
+    """
+    Saves the current progress to all three files.
+    """
+
+    # -----------------------------------------------------
+    # Save content.txt
+    # -----------------------------------------------------
+
+    with open(
+        output_file,
+        "w",
+        encoding="utf-8"
+    ) as f:
+
+        f.write(
+            f"Titel: \n{thread_title}\n\n"
+        )
+
+        f.write(
+            f"URL: \n{base_url}\n\n"
+        )
+
+        f.write(
+            all_pages_content
+        )
+
+    # -----------------------------------------------------
+    # Save links.txt
+    # -----------------------------------------------------
+
+    with open(
+        links_file,
+        "w",
+        encoding="utf-8"
+    ) as f:
+
+        for url, data in found_links.items():
+
+            pages = ", ".join(
+                str(page)
+                for page in data["pages"]
+            )
+
+            posts = ", ".join(
+                f"#{post}"
+                for post in data["posts"]
+            )
+
+            users = ", ".join(
+                data["users"]
+            )
+
+            f.write(
+                f"{url} - "
+                f"page {pages} - "
+                f"post {posts} - "
+                f"posted by {users}\n"
+            )
+
+    # -----------------------------------------------------
+    # Save failed_pages.txt
+    # -----------------------------------------------------
+
+    with open(
+        failed_pages_file,
+        "w",
+        encoding="utf-8"
+    ) as f:
+
+        for page in failed_pages:
+            f.write(
+                f"{page}\n"
+            )
+
+
 def fetch_page(page_num):
+
     url = f"{base_url}p{page_num}"
+
     driver.get(url)
+
     time.sleep(1)  # Undviker bot-detection
 
     global thread_title
+
     if page_num == start_page and not thread_title:
         thread_title = driver.title.strip()
 
-    if "captcha" in driver.page_source.lower() or "säkerhetskontroll" in driver.page_source.lower():
-        print(f"\033[91mCAPTCHA eller säkerhetssida på sida {page_num}. Hoppar över...\033[0m")
+    if (
+        "captcha" in driver.page_source.lower()
+        or "säkerhetskontroll" in driver.page_source.lower()
+    ):
+
+        print(
+            f"\033[91mCAPTCHA eller säkerhetssida på sida "
+            f"{page_num}. Hoppar över...\033[0m"
+        )
+
         failed_pages.append(page_num)
+
+        # Save failed page immediately.
+        save_progress()
+
         return None
 
     try:
+
         WebDriverWait(driver, 15).until(
-            EC.presence_of_element_located((By.CLASS_NAME, "post_message"))
+            EC.presence_of_element_located(
+                (By.CLASS_NAME, "post_message")
+            )
         )
+
     except:
+
         return False
 
-    return BeautifulSoup(driver.page_source, "html.parser")
+    return BeautifulSoup(
+        driver.page_source,
+        "html.parser"
+    )
 
-# Main loop
-page_num = start_page
 
-print("") # Empty line
+def extract_links(
+    message_div,
+    page_num,
+    post_number,
+    username
+):
+    """
+    Finds URLs in the original post.
 
-while True:
-    soup = fetch_page(page_num)
+    Quoted posts are removed before searching for URLs.
 
-    retries = 0
-    while soup is False and retries < 2:
-        print(f"Misslyckades att hämta {page_num} pga bot-detection... Försöker igen.")
-        time.sleep(5)  # Undviker bot-detection
-        soup = fetch_page(page_num)
-        retries += 1
+    Each unique URL is stored only once. If the same URL
+    occurs in another post, its page, post number and
+    username are appended to the existing entry.
+    """
 
-    if soup is None:
-        page_num += 1
-        continue
-    if soup is False:
-        print(f"\033[91mSida {page_num} misslyckades efter 2 omförsök.\033[0m")
-        failed_pages.append(page_num)
-        page_num += 1
-        continue
+    # Create a separate copy so that the original
+    # message is not modified.
+    message_for_links = BeautifulSoup(
+        str(message_div),
+        "html.parser"
+    )
 
-    posts = soup.find_all('div', class_='post-body')
-    page_content = ""
+    # -----------------------------------------------------
+    # Remove quoted posts
+    # -----------------------------------------------------
 
-    for post in posts:
-        date_parent = post.find_previous('div', class_='post-heading')
-        date_element = date_parent.get_text(strip=True).split("\n")[0] if date_parent else "Okänt datum"
+    quote_selectors = [
+        "blockquote",
+        ".quote",
+        ".bbcode_quote",
+        ".quotecontent",
+        ".quotetitle",
+        ".quote_body",
+        ".quote-content",
+    ]
 
-        user_info = post.find('a', class_='post-user-username')
-        username = user_info.get_text(strip=True) if user_info else "Okänd användare"
+    for selector in quote_selectors:
 
-        message_div = post.find('div', class_='post_message')
-        if not message_div:
+        for quote in message_for_links.select(selector):
+            quote.decompose()
+
+    # -----------------------------------------------------
+    # Get remaining text
+    # -----------------------------------------------------
+
+    message_text = message_for_links.get_text(
+        separator="\n",
+        strip=True
+    )
+
+    # -----------------------------------------------------
+    # Find URLs
+    # -----------------------------------------------------
+
+    url_pattern = r'https?://[^\s<>"\']+'
+
+    urls = re.findall(
+        url_pattern,
+        message_text,
+        re.IGNORECASE
+    )
+
+    # Avoid finding the exact same URL multiple times
+    # within the same post.
+    seen_urls = set()
+
+    for url in urls:
+
+        # Remove punctuation that can be attached
+        # to the end of a URL in normal text.
+        url = url.rstrip(
+            '.,!?;:)\'"'
+        )
+
+        if not url:
             continue
 
-        message_text = message_div.get_text(separator="\n", strip=True)
+        if url in seen_urls:
+            continue
+
+        seen_urls.add(url)
+
+        # -------------------------------------------------
+        # New URL
+        # -------------------------------------------------
+
+        if url not in found_links:
+
+            found_links[url] = {
+                "pages": [],
+                "posts": [],
+                "users": []
+            }
+
+        # -------------------------------------------------
+        # Add this occurrence
+        # -------------------------------------------------
+
+        found_links[url]["pages"].append(
+            page_num
+        )
+
+        found_links[url]["posts"].append(
+            post_number
+        )
+
+        found_links[url]["users"].append(
+            username
+        )
+
+
+# ---------------------------------------------------------
+# Main loop
+# ---------------------------------------------------------
+
+page_num = start_page
+title_printed = False
+
+print("")
+
+
+# ---------------------------------------------------------
+# Clear old files at startup
+# ---------------------------------------------------------
+
+with open(
+    output_file,
+    "w",
+    encoding="utf-8"
+) as f:
+    f.write("")
+
+
+with open(
+    links_file,
+    "w",
+    encoding="utf-8"
+) as f:
+    f.write("")
+
+
+with open(
+    failed_pages_file,
+    "w",
+    encoding="utf-8"
+) as f:
+    f.write("")
+
+
+try:
+
+    while True:
+
+        soup = fetch_page(page_num)
+
+        retries = 0
+
+        while soup is False and retries < 2:
+
+            print(
+                f"Misslyckades att hämta {page_num} "
+                f"pga bot-detection... Försöker igen."
+            )
+
+            time.sleep(5)
+
+            soup = fetch_page(page_num)
+
+            retries += 1
+
+        if soup is None:
+
+            page_num += 1
+
+            if (
+                end_page != -1
+                and page_num > end_page
+            ):
+                break
+
+            continue
+
+        if soup is False:
+
+            print(
+                f"\033[91mSida {page_num} misslyckades "
+                f"efter 2 omförsök.\033[0m"
+            )
+
+            failed_pages.append(
+                page_num
+            )
+
+            save_progress()
+
+            page_num += 1
+
+            if (
+                end_page != -1
+                and page_num > end_page
+            ):
+                break
+
+            continue
+
+        # -------------------------------------------------
+        # Thread title
+        # -------------------------------------------------
+
+        if not title_printed:
+
+            print(
+                f"Börjar läsa tråd: {thread_title}"
+            )
+
+            title_printed = True
+
+        # -------------------------------------------------
+        # Find posts
+        # -------------------------------------------------
+
+        posts = soup.find_all(
+            "div",
+            class_="post-body"
+        )
+
+        page_content = ""
+
+        for post in posts:
+
+            # -------------------------------------------------
+            # Date + post number
+            # -------------------------------------------------
+
+            date_parent = post.find_previous(
+                "div",
+                class_="post-heading"
+            )
+
+            date_element = (
+                date_parent.get_text(strip=True)
+                .split("\n")[0]
+                if date_parent
+                else "Okänt datum"
+            )
+
+            # The thread-local post number is included
+            # in the date string, for example:
+            #
+            # "Igår, 23:23#95"
+
+            post_match = re.search(
+                r'#(\d+)',
+                date_element
+            )
+
+            post_number = (
+                post_match.group(1)
+                if post_match
+                else "?"
+            )
+
+            # -------------------------------------------------
+            # Username
+            # -------------------------------------------------
+
+            user_info = post.find(
+                "a",
+                class_="post-user-username"
+            )
+
+            username = (
+                user_info.get_text(strip=True)
+                if user_info
+                else "Okänd användare"
+            )
+
+            # -------------------------------------------------
+            # Message
+            # -------------------------------------------------
+
+            message_div = post.find(
+                "div",
+                class_="post_message"
+            )
+
+            if not message_div:
+                continue
+
+            # -------------------------------------------------
+            # Find links in original post
+            # -------------------------------------------------
+
+            extract_links(
+                message_div,
+                page_num,
+                post_number,
+                username
+            )
+
+            # -------------------------------------------------
+            # Save post text
+            # -------------------------------------------------
+
+            message_text = message_div.get_text(
+                separator="\n",
+                strip=True
+            )
+
+            page_content += (
+                f"\n{'-' * 60}\n\n"
+                f"Datum: {date_element}\n"
+                f"Användare: {username}\n"
+                f"Inlägg:\n{message_text}\n"
+            )
 
         page_content += (
-            f"\n{'-'*60}\n\n"
-            f"Datum: {date_element}\n"
-            f"Användare: {username}\n"
-            f"Inlägg:\n{message_text}\n"
+            f"\n{'-' * 60}\n\n"
         )
-        
-    page_content += f"\n{'-'*60}\n\n"
 
-    if previous_page_content is not None and page_content == previous_page_content:
-        print(f"\033[93mSida {page_num - 1} är sista sidan av tråden.\033[0m")
-        break
+        # -----------------------------------------------------
+        # Check for duplicate final page
+        # -----------------------------------------------------
 
-    previous_page_content = page_content
+        if (
+            previous_page_content is not None
+            and page_content == previous_page_content
+        ):
 
-    print(f"Hämtar sida {page_num}")
+            print(
+                f"\033[93mSida {page_num - 1} är sista "
+                f"sidan av tråden.\033[0m"
+            )
 
-    all_pages_content += "\n" + "-"*14 + f"\n|  SIDA {page_num}   |\n" + "-"*14 + "\n\n"
-    all_pages_content += page_content
+            break
 
-    if page_num % 10 == 0:
-        print("Pausar i fem sekunder... (Undviker bot-detection)")
-        time.sleep(5)  # Undviker bot-detection
+        previous_page_content = page_content
 
-    page_num += 1
+        print(
+            f"Hämtar sida {page_num}"
+        )
 
-    if end_page != -1 and page_num > end_page:
-        break
+        all_pages_content += (
+            "\n"
+            + "-" * 14
+            + f"\n|  SIDA {page_num}   |\n"
+            + "-" * 14
+            + "\n\n"
+        )
 
-driver.quit()
+        all_pages_content += page_content
 
-# Spara main text
-with open(output_file, "w", encoding="utf-8") as f:
-    f.write(f"Titel: \n{thread_title}\n\n")
-    f.write(f"URL: \n{base_url}\n\n")
-    f.write(all_pages_content)
+        # -----------------------------------------------------
+        # Save progress after every page
+        # -----------------------------------------------------
 
-# Save failed pages if any
+        save_progress()
+
+        # -----------------------------------------------------
+        # Pause every 10 pages
+        # -----------------------------------------------------
+
+        if page_num % 10 == 0:
+
+            print(
+                "Pausar i fem sekunder... "
+                "(Undviker bot-detection)"
+            )
+
+            time.sleep(5)
+
+        page_num += 1
+
+        if (
+            end_page != -1
+            and page_num > end_page
+        ):
+            break
+
+finally:
+
+    driver.quit()
+
+
+# ---------------------------------------------------------
+# Final status
+# ---------------------------------------------------------
+
 if failed_pages:
-    print("\n\033[91mMisslyckades att hämta följande sidor (efter 2 retries):\033[0m")
-    print(failed_pages)
 
-    with open(failed_pages_file, "w", encoding="utf-8") as f:
-        for page in failed_pages:
-            f.write(f"{page}\n")
-    print(f"\n\033[91mMisslyckade sidor sparade i: {failed_pages_file}\033[0m")
+    print(
+        "\n\033[91mMisslyckades att hämta följande "
+        "sidor (efter 2 retries):\033[0m"
+    )
+
+    print(
+        failed_pages
+    )
+
 else:
-    print(f"\n\033[92mInga errors! \033[0m")
 
-print(f"\n\033[92mAlla inlägg är nu sparade i:\033[0m \033[96m{output_file}\033[0m\n")
+    print(
+        "\n\033[92mInga errors! \033[0m"
+    )
+
+
+print(
+    f"\n\033[92mAlla inlägg är nu sparade i:\033[0m "
+    f"\033[96m{output_file}\033[0m"
+)
+
+print(
+    f"\033[92mAlla länkar är nu sparade i:\033[0m "
+    f"\033[96m{links_file}\033[0m\n"
+)
