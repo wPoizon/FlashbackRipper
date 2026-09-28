@@ -85,20 +85,25 @@ failed_pages = []
 previous_page_content = None
 thread_title = ""
 
+# Page to resume from, if this thread has already been scanned.
+resume_page = None
+
 
 def create_thread_output_folder():
     """
-    Creates a unique output folder for the current thread.
+    Creates or reuses the output folder for the current thread.
 
-    The folder is based on the thread title. Characters that are not
-    suitable for Windows/Linux filenames are removed or replaced.
-    If the folder already exists, a numbered suffix is added so that
-    previous runs are never overwritten.
+    If the thread folder already exists, it is reused.
+    Existing progress is loaded so the thread can resume
+    from the last successfully saved page.
     """
 
     global output_file
     global failed_pages_file
     global links_file
+    global all_pages_content
+    global failed_pages
+    global resume_page
 
     safe_title = re.sub(
         r'[<>:"/\\|?*]',
@@ -120,17 +125,8 @@ def create_thread_output_folder():
         safe_title
     )
 
-    # Never overwrite an existing thread folder.
-    if os.path.exists(thread_folder):
-        counter = 2
-
-        while os.path.exists(
-            f"{thread_folder} ({counter})"
-        ):
-            counter += 1
-
-        thread_folder = f"{thread_folder} ({counter})"
-
+    # Reuse the existing folder instead of creating
+    # "Thread (2)", "Thread (3)", etc.
     os.makedirs(
         thread_folder,
         exist_ok=True
@@ -151,9 +147,112 @@ def create_thread_output_folder():
         links_filename
     )
 
-    print(
-        f"Trådens filer sparas i: {thread_folder}"
+    # ---------------------------------------------------------
+    # Load existing progress
+    # ---------------------------------------------------------
+
+    if os.path.exists(output_file):
+
+        print(
+            f"Hittade befintlig tråd: {thread_folder}"
+        )
+
+        print(
+            "Läser tidigare sparad progress..."
+        )
+
+        with open(
+            output_file,
+            "r",
+            encoding="utf-8"
+        ) as f:
+            existing_content = f.read()
+
+        # Find all saved page headers.
+        page_matches = re.findall(
+            r'\|\s*SIDA\s+(\d+)\s+\|',
+            existing_content
+        )
+
+        if page_matches:
+
+            last_saved_page = max(
+                int(page)
+                for page in page_matches
+            )
+
+            all_pages_content = existing_content
+
+            resume_page = last_saved_page
+
+            print(
+                f"Senast sparade sida: {last_saved_page}"
+            )
+
+            print(
+                f"Återupptar från sida {resume_page} "
+                f"(sidan skannas om)."
+            )
+
+        else:
+
+            print(
+                "Ingen sparad sida hittades. "
+                "Börjar från start_page."
+            )
+
+    # ---------------------------------------------------------
+    # Load failed pages
+    # ---------------------------------------------------------
+
+    if os.path.exists(failed_pages_file):
+
+        with open(
+            failed_pages_file,
+            "r",
+            encoding="utf-8"
+        ) as f:
+
+            for line in f:
+
+                line = line.strip()
+
+                if line.isdigit():
+
+                    page = int(line)
+
+                    if page not in failed_pages:
+                        failed_pages.append(page)
+
+
+def remove_page_from_saved_content(page_num):
+    """
+    Removes the saved content for page_num and all pages after it.
+
+    This allows the last saved page to be scanned again without
+    duplicating its content.
+    """
+
+    global all_pages_content
+
+    if not all_pages_content:
+        return
+
+    page_pattern = re.compile(
+        rf'\n?-{{14}}\n'
+        rf'\|  SIDA {page_num}\s+\|\n'
+        rf'-{{14}}\n'
     )
+
+    match = page_pattern.search(
+        all_pages_content
+    )
+
+    if match:
+
+        all_pages_content = (
+            all_pages_content[:match.start()]
+        )
 
 
 def save_progress():
@@ -227,9 +326,31 @@ def save_progress():
     ) as f:
 
         for page in failed_pages:
+
             f.write(
                 f"{page}\n"
             )
+
+
+def initialize_thread():
+    """
+    Loads the first page only to determine the thread title,
+    then creates/reuses the thread folder and loads progress.
+
+    This MUST happen before the main loop determines page_num.
+    """
+
+    global thread_title
+
+    url = f"{base_url}p{start_page}"
+
+    driver.get(url)
+
+    time.sleep(1)
+
+    thread_title = driver.title.strip()
+
+    create_thread_output_folder()
 
 
 def fetch_page(page_num):
@@ -239,12 +360,6 @@ def fetch_page(page_num):
     driver.get(url)
 
     time.sleep(1)  # Undviker bot-detection
-
-    global thread_title
-
-    if page_num == start_page and not thread_title:
-        thread_title = driver.title.strip()
-        create_thread_output_folder()
 
     if (
         "captcha" in driver.page_source.lower()
@@ -256,7 +371,8 @@ def fetch_page(page_num):
             f"{page_num}. Hoppar över...\033[0m"
         )
 
-        failed_pages.append(page_num)
+        if page_num not in failed_pages:
+            failed_pages.append(page_num)
 
         # Save failed page immediately.
         save_progress()
@@ -394,16 +510,45 @@ def extract_links(
 
 
 # ---------------------------------------------------------
-# Main loop
+# INITIALIZE THREAD BEFORE MAIN LOOP
 # ---------------------------------------------------------
 
-page_num = start_page
-title_printed = False
-
-print("")
-
-
 try:
+
+    initialize_thread()
+
+    print(
+        f"Börjar läsa tråd: {thread_title}"
+    )
+
+    # -----------------------------------------------------
+    # Determine where to start
+    # -----------------------------------------------------
+
+    if resume_page is not None:
+
+        # Existing thread.
+        #
+        # The last saved page is deliberately scanned again.
+        page_num = resume_page
+
+        # Remove the old copy of this page before rescanning.
+        remove_page_from_saved_content(
+            page_num
+        )
+
+    else:
+
+        # New thread.
+        page_num = start_page
+
+    print(
+        f"Startar skanning från sida {page_num}"
+    )
+
+    # ---------------------------------------------------------
+    # Main loop
+    # ---------------------------------------------------------
 
     while True:
 
@@ -443,9 +588,11 @@ try:
                 f"efter 2 omförsök.\033[0m"
             )
 
-            failed_pages.append(
-                page_num
-            )
+            if page_num not in failed_pages:
+
+                failed_pages.append(
+                    page_num
+                )
 
             save_progress()
 
@@ -459,17 +606,13 @@ try:
 
             continue
 
-        # -------------------------------------------------
-        # Thread title
-        # -------------------------------------------------
+        # A page that loaded successfully no longer belongs
+        # in the failed-page list.
+        if page_num in failed_pages:
 
-        if not title_printed:
-
-            print(
-                f"Börjar läsa tråd: {thread_title}"
+            failed_pages.remove(
+                page_num
             )
-
-            title_printed = True
 
         # -------------------------------------------------
         # Find posts
