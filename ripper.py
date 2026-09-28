@@ -22,20 +22,30 @@ chromedriver_path = os.path.join(
     config.get('Paths', 'chromedriver')
 )
 
-output_file = os.path.join(
-    script_dir,
+# Output filenames from settings.cfg.
+# A separate folder will be created for every thread.
+output_filename = os.path.basename(
     config.get('Paths', 'output_file')
 )
 
-failed_pages_file = os.path.join(
-    script_dir,
+failed_pages_filename = os.path.basename(
     config.get('Paths', 'failed_pages_file')
 )
 
-links_file = os.path.join(
-    script_dir,
+links_filename = os.path.basename(
     config.get('Paths', 'links_file')
 )
+
+# Use the directory configured for output_file as the root output directory.
+output_root = os.path.join(
+    script_dir,
+    os.path.dirname(config.get('Paths', 'output_file'))
+)
+
+output_file = None
+failed_pages_file = None
+links_file = None
+
 
 base_url = config.get('URL', 'base_url')
 start_page = config.getint('URL', 'start_page')
@@ -74,6 +84,76 @@ found_links = {}
 failed_pages = []
 previous_page_content = None
 thread_title = ""
+
+
+def create_thread_output_folder():
+    """
+    Creates a unique output folder for the current thread.
+
+    The folder is based on the thread title. Characters that are not
+    suitable for Windows/Linux filenames are removed or replaced.
+    If the folder already exists, a numbered suffix is added so that
+    previous runs are never overwritten.
+    """
+
+    global output_file
+    global failed_pages_file
+    global links_file
+
+    safe_title = re.sub(
+        r'[<>:"/\\|?*]',
+        '_',
+        thread_title
+    )
+
+    safe_title = re.sub(
+        r'\s+',
+        ' ',
+        safe_title
+    ).strip(' ._')
+
+    if not safe_title:
+        safe_title = "Okänd tråd"
+
+    thread_folder = os.path.join(
+        output_root,
+        safe_title
+    )
+
+    # Never overwrite an existing thread folder.
+    if os.path.exists(thread_folder):
+        counter = 2
+
+        while os.path.exists(
+            f"{thread_folder} ({counter})"
+        ):
+            counter += 1
+
+        thread_folder = f"{thread_folder} ({counter})"
+
+    os.makedirs(
+        thread_folder,
+        exist_ok=True
+    )
+
+    output_file = os.path.join(
+        thread_folder,
+        output_filename
+    )
+
+    failed_pages_file = os.path.join(
+        thread_folder,
+        failed_pages_filename
+    )
+
+    links_file = os.path.join(
+        thread_folder,
+        links_filename
+    )
+
+    print(
+        f"Trådens filer sparas i: {thread_folder}"
+    )
 
 
 def save_progress():
@@ -164,6 +244,7 @@ def fetch_page(page_num):
 
     if page_num == start_page and not thread_title:
         thread_title = driver.title.strip()
+        create_thread_output_folder()
 
     if (
         "captcha" in driver.page_source.lower()
@@ -320,34 +401,6 @@ page_num = start_page
 title_printed = False
 
 print("")
-
-
-# ---------------------------------------------------------
-# Clear old files at startup
-# ---------------------------------------------------------
-
-with open(
-    output_file,
-    "w",
-    encoding="utf-8"
-) as f:
-    f.write("")
-
-
-with open(
-    links_file,
-    "w",
-    encoding="utf-8"
-) as f:
-    f.write("")
-
-
-with open(
-    failed_pages_file,
-    "w",
-    encoding="utf-8"
-) as f:
-    f.write("")
 
 
 try:
@@ -518,7 +571,7 @@ try:
             )
 
         page_content += (
-            f"\n{'-' * 60}\n\n"
+            f"\n{'-' * 60}\n"
         )
 
         # -----------------------------------------------------
