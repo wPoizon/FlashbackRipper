@@ -1,3 +1,6 @@
 *.exe
-*.txt
 .venv
+
+**/content.txt
+**/links.txt
+**/failed_pages.txt
